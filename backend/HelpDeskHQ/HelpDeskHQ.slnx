@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="../HelpDeskHQ.Core/HelpDeskHQ.Core.csproj" />
+  <Project Path="../HelpDeskHQ.Infrastructure/HelpDeskHQ.Infrastructure.csproj" />
+  <Project Path="HelpDeskHQ.API/HelpDeskHQ.API.csproj" />
+</Solution>
