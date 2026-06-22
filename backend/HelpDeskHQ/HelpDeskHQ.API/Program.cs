@@ -17,6 +17,10 @@ builder.Services.AddDbContext<HelpDeskHQ.Infrastructure.Data.HelpDeskHQDbContext
 
 builder.Services.AddScoped<IAuthService, AuthService>();
 
+builder.Services.AddScoped<ISlaService, SlaService>();
+
+builder.Services.AddScoped<ITicketService, TicketService>();
+
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
