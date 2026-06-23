@@ -159,5 +159,134 @@ namespace HelpDeskHQ.Infrastructure.Services
                 EscalationLevel = ticket.EscalationLevel
             }).ToList();
         }
+
+        public async Task<TicketResponseDto> AssignTicketAsync(int ticketId, int agentUserId, int changedByUserId)
+        {
+            var ticket = await _context.Tickets.FirstOrDefaultAsync(t => t.Id == ticketId);
+            if (ticket == null)
+            {
+                throw new InvalidOperationException("Ticket not found.");
+            }
+
+            var agentExists = await _context.Users.AnyAsync(u => u.Id == agentUserId);
+            if (!agentExists)
+            {
+                throw new InvalidOperationException("Assigned agent not found.");
+            }
+
+            var oldStatus = ticket.Status;
+            ticket.AssignedAgentId = agentUserId;
+
+            // Assigning a ticket moves it from New to Assigned, if it's still New.
+            if (ticket.Status == TicketStatus.New)
+            {
+                ValidateTransition(ticket.Status, TicketStatus.Assigned);
+                ticket.Status = TicketStatus.Assigned;
+            }
+
+            await _context.SaveChangesAsync();
+
+            await AddStatusHistoryAsync(ticket.Id, oldStatus, ticket.Status, changedByUserId, "Agent assigned");
+
+            return await MapToResponseDto(ticket.Id);
+        }
+
+        public async Task<TicketResponseDto> ChangeStatusAsync(int ticketId, int newStatus, int changedByUserId, string? note)
+        {
+            var ticket = await _context.Tickets.FirstOrDefaultAsync(t => t.Id == ticketId);
+            if (ticket == null)
+            {
+                throw new InvalidOperationException("Ticket not found.");
+            }
+
+            var targetStatus = (TicketStatus)newStatus;
+            ValidateTransition(ticket.Status, targetStatus);
+
+            var oldStatus = ticket.Status;
+
+            // Stop the "first response" SLA clock the first time the ticket becomes InProgress
+            if (targetStatus == TicketStatus.InProgress && ticket.FirstRespondedAt == null)
+            {
+                ticket.FirstRespondedAt = DateTime.UtcNow;
+            }
+
+            // Track OnHold periods so resolution-clock math can exclude paused time later
+            if (targetStatus == TicketStatus.OnHold)
+            {
+                ticket.OnHoldSince = DateTime.UtcNow;
+            }
+            else if (oldStatus == TicketStatus.OnHold && ticket.OnHoldSince != null)
+            {
+                var pausedMinutes = (int)(DateTime.UtcNow - ticket.OnHoldSince.Value).TotalMinutes;
+                ticket.TotalOnHoldMinutes += pausedMinutes;
+                ticket.OnHoldSince = null;
+            }
+
+            ticket.Status = targetStatus;
+            await _context.SaveChangesAsync();
+
+            await AddStatusHistoryAsync(ticket.Id, oldStatus, targetStatus, changedByUserId, note);
+
+            return await MapToResponseDto(ticket.Id);
+        }
+
+        public async Task<TicketResponseDto> ResolveTicketAsync(int ticketId, string resolutionNotes, int changedByUserId)
+        {
+            var ticket = await _context.Tickets.FirstOrDefaultAsync(t => t.Id == ticketId);
+            if (ticket == null)
+            {
+                throw new InvalidOperationException("Ticket not found.");
+            }
+
+            ValidateTransition(ticket.Status, TicketStatus.Resolved);
+
+            var oldStatus = ticket.Status;
+            ticket.Status = TicketStatus.Resolved;
+            ticket.ResolutionNotes = resolutionNotes;
+            ticket.ResolvedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            await AddStatusHistoryAsync(ticket.Id, oldStatus, TicketStatus.Resolved, changedByUserId, "Resolved");
+
+            return await MapToResponseDto(ticket.Id);
+        }
+
+        private static readonly Dictionary<TicketStatus, TicketStatus[]> ValidTransitions = new()
+        {
+            [TicketStatus.New] = new[] { TicketStatus.Assigned, TicketStatus.Escalated },
+            [TicketStatus.Assigned] = new[] { TicketStatus.InProgress, TicketStatus.Escalated },
+            [TicketStatus.InProgress] = new[] { TicketStatus.OnHold, TicketStatus.Resolved, TicketStatus.Escalated },
+            [TicketStatus.OnHold] = new[] { TicketStatus.InProgress },
+            [TicketStatus.Resolved] = new[] { TicketStatus.Closed, TicketStatus.Reopened },
+            [TicketStatus.Reopened] = new[] { TicketStatus.InProgress },
+            [TicketStatus.Escalated] = new[] { TicketStatus.InProgress },
+            [TicketStatus.Closed] = Array.Empty<TicketStatus>()
+        };
+
+        private static void ValidateTransition(TicketStatus from, TicketStatus to)
+        {
+            if (from == to) return; // allow no-op, e.g. re-saving the same status
+
+            if (!ValidTransitions.TryGetValue(from, out var allowed) || !allowed.Contains(to))
+            {
+                throw new InvalidOperationException(
+                    $"Invalid status transition: cannot move from {from} to {to}.");
+            }
+        }
+
+        private async Task AddStatusHistoryAsync(int ticketId, TicketStatus from, TicketStatus to, int changedByUserId, string? note)
+        {
+            _context.TicketStatusHistories.Add(new TicketStatusHistory
+            {
+                TicketId = ticketId,
+                FromStatus = from,
+                ToStatus = to,
+                ChangedByUserId = changedByUserId,
+                ChangedAt = DateTime.UtcNow,
+                Note = note
+            });
+            await _context.SaveChangesAsync();
+        }
     }
 }
