@@ -1,25 +1,33 @@
 using Microsoft.EntityFrameworkCore;
-
 using HelpDeskHQ.Core.Interfaces;
 using HelpDeskHQ.Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
+using Hangfire;
+using Hangfire.PostgreSql;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
-
 builder.Services.AddControllers();
 
 builder.Services.AddDbContext<HelpDeskHQ.Infrastructure.Data.HelpDeskHQDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 builder.Services.AddScoped<IAuthService, AuthService>();
-
 builder.Services.AddScoped<ISlaService, SlaService>();
-
 builder.Services.AddScoped<ITicketService, TicketService>();
+
+// Hangfire — uses the same PostgreSQL database
+builder.Services.AddHangfire(config => config
+    .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+    .UseSimpleAssemblyNameTypeSerializer()
+    .UseRecommendedSerializerSettings()
+    .UsePostgreSqlStorage(
+        builder.Configuration.GetConnectionString("DefaultConnection")!));
+
+builder.Services.AddHangfireServer();
 
 builder.Services.AddAuthentication(options =>
 {
@@ -43,7 +51,6 @@ builder.Services.AddAuthentication(options =>
 
 builder.Services.AddAuthorization();
 
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
@@ -60,6 +67,9 @@ app.UseHttpsRedirection();
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+// Hangfire dashboard — accessible at /hangfire in dev
+app.UseHangfireDashboard("/hangfire");
 
 app.MapControllers();
 
