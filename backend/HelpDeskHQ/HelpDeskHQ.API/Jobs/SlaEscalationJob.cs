@@ -108,6 +108,9 @@ namespace HelpDeskHQ.API.Jobs
             // --- Breached: 100% elapsed, not yet marked Breached ---
             if (percentElapsed >= 1.0 && ticket.SlaBreachStatus != SlaBreachStatus.Breached)
             {
+                // Capture the status BEFORE mutating it, so the audit trail is accurate
+                var oldStatus = ticket.Status;
+
                 ticket.SlaBreachStatus = SlaBreachStatus.Breached;
                 ticket.EscalationLevel += 1;
                 ticket.Status = TicketStatus.Escalated;
@@ -147,7 +150,7 @@ namespace HelpDeskHQ.API.Jobs
                 _context.TicketStatusHistories.Add(new TicketStatusHistory
                 {
                     TicketId = ticket.Id,
-                    FromStatus = ticket.Status,
+                    FromStatus = oldStatus,
                     ToStatus = TicketStatus.Escalated,
                     ChangedByUserId = ticket.AssignedAgentId ?? ticket.RaisedByUserId,
                     ChangedAt = now,

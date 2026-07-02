@@ -28,6 +28,11 @@ namespace HelpDeskHQ.Infrastructure.Services
                 throw new InvalidOperationException("Invalid ticket category.");
             }
 
+            if (!Enum.IsDefined(typeof(TicketPriority), request.Priority))
+            {
+                throw new InvalidOperationException("Invalid priority value.");
+            }
+
             var priority = (TicketPriority)request.Priority;
             var createdAt = DateTime.UtcNow;
 
@@ -197,6 +202,11 @@ namespace HelpDeskHQ.Infrastructure.Services
             if (ticket == null)
             {
                 throw new InvalidOperationException("Ticket not found.");
+            }
+
+            if (!Enum.IsDefined(typeof(TicketStatus), newStatus))
+            {
+                throw new InvalidOperationException("Invalid status value.");
             }
 
             var targetStatus = (TicketStatus)newStatus;
