@@ -19,6 +19,10 @@ builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<ISlaService, SlaService>();
 builder.Services.AddScoped<ITicketService, TicketService>();
 
+// Background jobs — registered so Hangfire can resolve them via DI when triggered
+builder.Services.AddScoped<HelpDeskHQ.API.Jobs.SlaEscalationJob>();
+builder.Services.AddScoped<HelpDeskHQ.API.Jobs.AutoCloseJob>();
+
 // Hangfire — uses the same PostgreSQL database
 builder.Services.AddHangfire(config => config
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
@@ -72,5 +76,16 @@ app.UseAuthorization();
 app.UseHangfireDashboard("/hangfire");
 
 app.MapControllers();
+
+// Register recurring background jobs
+RecurringJob.AddOrUpdate<HelpDeskHQ.API.Jobs.SlaEscalationJob>(
+    "sla-escalation-check",
+    job => job.ExecuteAsync(),
+    "*/5 * * * *"); // every 5 minutes
+
+RecurringJob.AddOrUpdate<HelpDeskHQ.API.Jobs.AutoCloseJob>(
+    "auto-close-resolved-tickets",
+    job => job.ExecuteAsync(),
+    "0 * * * *"); // every hour
 
 app.Run();
