@@ -82,10 +82,10 @@ namespace HelpDeskHQ.Infrastructure.Data
                 .OnDelete(DeleteBehavior.Restrict);
 
             modelBuilder.Entity<Notification>()
-                 .HasOne(n => n.Ticket)
-                 .WithMany()
-                 .HasForeignKey(n => n.TicketId)
-                 .OnDelete(DeleteBehavior.Restrict);   // ← still Restrict, not Cascade
+                .HasOne(n => n.Ticket)
+                .WithMany()
+                .HasForeignKey(n => n.TicketId)
+                .OnDelete(DeleteBehavior.Cascade);
 
             // Ensure email is unique
             modelBuilder.Entity<User>()

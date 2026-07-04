@@ -60,6 +60,13 @@ builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
+// Seed initial Team/Category/SlaPolicy data on startup
+using (var scope = app.Services.CreateScope())
+{
+    var dbContext = scope.ServiceProvider.GetRequiredService<HelpDeskHQ.Infrastructure.Data.HelpDeskHQDbContext>();
+    await HelpDeskHQ.Infrastructure.Data.DbSeeder.SeedAsync(dbContext);
+}
+
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
