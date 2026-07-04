@@ -19,6 +19,10 @@ builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<ISlaService, SlaService>();
 builder.Services.AddScoped<ITicketService, TicketService>();
 
+builder.Services.AddScoped<INotificationService, NotificationService>();
+
+builder.Services.AddScoped<IDashboardService, DashboardService>();
+
 // Background jobs — registered so Hangfire can resolve them via DI when triggered
 builder.Services.AddScoped<HelpDeskHQ.API.Jobs.SlaEscalationJob>();
 builder.Services.AddScoped<HelpDeskHQ.API.Jobs.AutoCloseJob>();

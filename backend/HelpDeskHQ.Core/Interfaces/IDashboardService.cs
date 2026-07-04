@@ -1,10 +1,9 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
+﻿using HelpDeskHQ.Core.DTOs.Dashboard;
 
 namespace HelpDeskHQ.Core.Interfaces
 {
-    internal class IDashboardService
+    public interface IDashboardService
     {
+        Task<DashboardSummaryDto> GetSummaryAsync();
     }
 }

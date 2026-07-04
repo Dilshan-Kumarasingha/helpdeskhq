@@ -1,10 +1,10 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
+﻿using HelpDeskHQ.Core.DTOs.Notifications;
 
 namespace HelpDeskHQ.Core.Interfaces
 {
-    internal class INotificationService
+    public interface INotificationService
     {
+        Task<List<NotificationResponseDto>> GetMyNotificationsAsync(int userId);
+        Task MarkAsReadAsync(int notificationId, int userId);
     }
 }

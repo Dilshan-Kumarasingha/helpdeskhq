@@ -1,10 +1,7 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-
-namespace HelpDeskHQ.Core.DTOs.Tickets
+﻿namespace HelpDeskHQ.Core.DTOs.Tickets
 {
-    internal class AddCommentDto
+    public class AddCommentDto
     {
+        public string Content { get; set; } = string.Empty;
     }
 }

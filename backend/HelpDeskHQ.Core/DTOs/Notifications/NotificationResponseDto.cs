@@ -1,10 +1,11 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-
-namespace HelpDeskHQ.Core.DTOs.Notifications
+﻿namespace HelpDeskHQ.Core.DTOs.Notifications
 {
-    internal class NotificationResponseDto
+    public class NotificationResponseDto
     {
+        public int Id { get; set; }
+        public int? TicketId { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public bool IsRead { get; set; }
+        public DateTime CreatedAt { get; set; }
     }
 }

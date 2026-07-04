@@ -262,6 +262,53 @@ namespace HelpDeskHQ.Infrastructure.Services
             return await MapToResponseDto(ticket.Id);
         }
 
+        public async Task<CommentResponseDto> AddCommentAsync(int ticketId, int authorUserId, string content)
+        {
+            var ticketExists = await _context.Tickets.AnyAsync(t => t.Id == ticketId);
+            if (!ticketExists)
+            {
+                throw new InvalidOperationException("Ticket not found.");
+            }
+
+            var comment = new TicketComment
+            {
+                TicketId = ticketId,
+                AuthorUserId = authorUserId,
+                Content = content,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _context.TicketComments.Add(comment);
+            await _context.SaveChangesAsync();
+
+            var author = await _context.Users.FirstAsync(u => u.Id == authorUserId);
+
+            return new CommentResponseDto
+            {
+                Id = comment.Id,
+                Content = comment.Content,
+                AuthorName = author.FullName,
+                CreatedAt = comment.CreatedAt
+            };
+        }
+
+        public async Task<List<CommentResponseDto>> GetCommentsAsync(int ticketId)
+        {
+            var comments = await _context.TicketComments
+                .Include(c => c.AuthorUser)
+                .Where(c => c.TicketId == ticketId)
+                .OrderBy(c => c.CreatedAt)
+                .ToListAsync();
+
+            return comments.Select(c => new CommentResponseDto
+            {
+                Id = c.Id,
+                Content = c.Content,
+                AuthorName = c.AuthorUser.FullName,
+                CreatedAt = c.CreatedAt
+            }).ToList();
+        }
+
         private static readonly Dictionary<TicketStatus, TicketStatus[]> ValidTransitions = new()
         {
             [TicketStatus.New] = new[] { TicketStatus.Assigned, TicketStatus.Escalated },
