@@ -58,6 +58,8 @@ builder.Services.AddAuthentication(options =>
 });
 
 builder.Services.AddAuthorization();
+builder.Services.AddSignalR();
+builder.Services.AddScoped<HelpDeskHQ.Core.Interfaces.IRealtimeNotifier, HelpDeskHQ.API.Hubs.SignalRNotifier>();
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -78,6 +80,8 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseMiddleware<HelpDeskHQ.API.Middleware.ExceptionHandlingMiddleware>();
+
 app.UseHttpsRedirection();
 
 app.UseAuthentication();
@@ -87,6 +91,7 @@ app.UseAuthorization();
 app.UseHangfireDashboard("/hangfire");
 
 app.MapControllers();
+app.MapHub<HelpDeskHQ.API.Hubs.TicketHub>("/hubs/tickets");
 
 // Register recurring background jobs
 RecurringJob.AddOrUpdate<HelpDeskHQ.API.Jobs.SlaEscalationJob>(

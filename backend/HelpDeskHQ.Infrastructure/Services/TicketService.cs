@@ -11,11 +11,13 @@ namespace HelpDeskHQ.Infrastructure.Services
     {
         private readonly HelpDeskHQDbContext _context;
         private readonly ISlaService _slaService;
+        private readonly IRealtimeNotifier _realtimeNotifier;
 
-        public TicketService(HelpDeskHQDbContext context, ISlaService slaService)
+        public TicketService(HelpDeskHQDbContext context, ISlaService slaService, IRealtimeNotifier realtimeNotifier)
         {
             _context = context;
             _slaService = slaService;
+            _realtimeNotifier = realtimeNotifier;
         }
 
         public async Task<TicketResponseDto> CreateTicketAsync(CreateTicketDto request, int raisedByUserId)
@@ -73,7 +75,9 @@ namespace HelpDeskHQ.Infrastructure.Services
             });
             await _context.SaveChangesAsync();
 
-            return await MapToResponseDto(ticket.Id);
+            var dto = await MapToResponseDto(ticket.Id);
+            await _realtimeNotifier.NotifyTicketUpdatedAsync(ticket.Id, dto);
+            return dto;
         }
 
         private async Task<string> GenerateTicketNumberAsync()
@@ -133,9 +137,6 @@ namespace HelpDeskHQ.Infrastructure.Services
                 .Include(t => t.AssignedAgent)
                 .Include(t => t.Team);
 
-            // Employees only see their own tickets.
-            // Agents, Team Leads, and Admins see everything for now —
-            // team-scoped filtering for Agents/Leads will be refined later.
             if (requestingUserRole == "Employee")
             {
                 query = query.Where(t => t.RaisedByUserId == requestingUserId);
@@ -182,7 +183,6 @@ namespace HelpDeskHQ.Infrastructure.Services
             var oldStatus = ticket.Status;
             ticket.AssignedAgentId = agentUserId;
 
-            // Assigning a ticket moves it from New to Assigned, if it's still New.
             if (ticket.Status == TicketStatus.New)
             {
                 ValidateTransition(ticket.Status, TicketStatus.Assigned);
@@ -193,7 +193,9 @@ namespace HelpDeskHQ.Infrastructure.Services
 
             await AddStatusHistoryAsync(ticket.Id, oldStatus, ticket.Status, changedByUserId, "Agent assigned");
 
-            return await MapToResponseDto(ticket.Id);
+            var dto = await MapToResponseDto(ticket.Id);
+            await _realtimeNotifier.NotifyTicketUpdatedAsync(ticket.Id, dto);
+            return dto;
         }
 
         public async Task<TicketResponseDto> ChangeStatusAsync(int ticketId, int newStatus, int changedByUserId, string? note)
@@ -214,13 +216,11 @@ namespace HelpDeskHQ.Infrastructure.Services
 
             var oldStatus = ticket.Status;
 
-            // Stop the "first response" SLA clock the first time the ticket becomes InProgress
             if (targetStatus == TicketStatus.InProgress && ticket.FirstRespondedAt == null)
             {
                 ticket.FirstRespondedAt = DateTime.UtcNow;
             }
 
-            // Track OnHold periods so resolution-clock math can exclude paused time later
             if (targetStatus == TicketStatus.OnHold)
             {
                 ticket.OnHoldSince = DateTime.UtcNow;
@@ -237,7 +237,9 @@ namespace HelpDeskHQ.Infrastructure.Services
 
             await AddStatusHistoryAsync(ticket.Id, oldStatus, targetStatus, changedByUserId, note);
 
-            return await MapToResponseDto(ticket.Id);
+            var dto = await MapToResponseDto(ticket.Id);
+            await _realtimeNotifier.NotifyTicketUpdatedAsync(ticket.Id, dto);
+            return dto;
         }
 
         public async Task<TicketResponseDto> ResolveTicketAsync(int ticketId, string resolutionNotes, int changedByUserId)
@@ -259,7 +261,9 @@ namespace HelpDeskHQ.Infrastructure.Services
 
             await AddStatusHistoryAsync(ticket.Id, oldStatus, TicketStatus.Resolved, changedByUserId, "Resolved");
 
-            return await MapToResponseDto(ticket.Id);
+            var dto = await MapToResponseDto(ticket.Id);
+            await _realtimeNotifier.NotifyTicketUpdatedAsync(ticket.Id, dto);
+            return dto;
         }
 
         public async Task<CommentResponseDto> AddCommentAsync(int ticketId, int authorUserId, string content)
@@ -283,13 +287,16 @@ namespace HelpDeskHQ.Infrastructure.Services
 
             var author = await _context.Users.FirstAsync(u => u.Id == authorUserId);
 
-            return new CommentResponseDto
+            var dto = new CommentResponseDto
             {
                 Id = comment.Id,
                 Content = comment.Content,
                 AuthorName = author.FullName,
                 CreatedAt = comment.CreatedAt
             };
+
+            await _realtimeNotifier.NotifyTicketUpdatedAsync(ticketId, new { type = "NewComment", comment = dto });
+            return dto;
         }
 
         public async Task<List<CommentResponseDto>> GetCommentsAsync(int ticketId)
@@ -323,7 +330,7 @@ namespace HelpDeskHQ.Infrastructure.Services
 
         private static void ValidateTransition(TicketStatus from, TicketStatus to)
         {
-            if (from == to) return; // allow no-op, e.g. re-saving the same status
+            if (from == to) return;
 
             if (!ValidTransitions.TryGetValue(from, out var allowed) || !allowed.Contains(to))
             {
