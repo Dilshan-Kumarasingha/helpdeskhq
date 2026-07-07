@@ -22,6 +22,8 @@ builder.Services.AddScoped<ITicketService, TicketService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 
 builder.Services.AddScoped<IDashboardService, DashboardService>();
+builder.Services.AddScoped<ITeamService, TeamService>();
+builder.Services.AddScoped<ICategoryService, CategoryService>();
 
 // Background jobs — registered so Hangfire can resolve them via DI when triggered
 builder.Services.AddScoped<HelpDeskHQ.API.Jobs.SlaEscalationJob>();
