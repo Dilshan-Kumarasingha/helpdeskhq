@@ -10,5 +10,8 @@ namespace HelpDeskHQ.Core.Interfaces
         Task<TicketResponseDto> AssignTicketAsync(int ticketId, int agentUserId, int changedByUserId);
         Task<TicketResponseDto> ChangeStatusAsync(int ticketId, int newStatus, int changedByUserId, string? note);
         Task<TicketResponseDto> ResolveTicketAsync(int ticketId, string resolutionNotes, int changedByUserId);
+
+        Task<CommentResponseDto> AddCommentAsync(int ticketId, int authorUserId, string content);
+        Task<List<CommentResponseDto>> GetCommentsAsync(int ticketId);
     }
 }

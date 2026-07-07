@@ -85,7 +85,7 @@ namespace HelpDeskHQ.Infrastructure.Data
                 .HasOne(n => n.Ticket)
                 .WithMany()
                 .HasForeignKey(n => n.TicketId)
-                .OnDelete(DeleteBehavior.Restrict);
+                .OnDelete(DeleteBehavior.Cascade);
 
             // Ensure email is unique
             modelBuilder.Entity<User>()
