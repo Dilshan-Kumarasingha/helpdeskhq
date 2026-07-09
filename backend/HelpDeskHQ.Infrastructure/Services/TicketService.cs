@@ -60,8 +60,26 @@ namespace HelpDeskHQ.Infrastructure.Services
                 EscalationLevel = 0
             };
 
-            _context.Tickets.Add(ticket);
-            await _context.SaveChangesAsync();
+            const int maxRetries = 3;
+            var attempt = 0;
+
+            while (true)
+            {
+                try
+                {
+                    _context.Tickets.Add(ticket);
+                    await _context.SaveChangesAsync();
+                    break; // success
+                }
+                catch (DbUpdateException) when (attempt < maxRetries)
+                {
+                    // Likely a unique constraint violation on TicketNumber due to a race
+                    // condition between concurrent requests. Detach and retry with a fresh number.
+                    _context.Entry(ticket).State = EntityState.Detached;
+                    attempt++;
+                    ticket.TicketNumber = await GenerateTicketNumberAsync();
+                }
+            }
 
             // Record the initial status in the audit history
             _context.TicketStatusHistories.Add(new TicketStatusHistory
