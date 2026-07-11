@@ -1,90 +1,62 @@
 # HelpDeskHQ
 
-**An internal IT & Facilities helpdesk system with an automated SLA engine.**
+An internal IT & Facilities helpdesk system with SLA tracking and automatic escalation.
 
-Employees raise tickets. Support agents work them. The system does not just store tickets — it actively tracks Service Level Agreement (SLA) deadlines for every ticket and **automatically escalates** any ticket that breaches its response or resolution target, the same way real tools like Jira Service Management or Zendesk do under the hood.
+Employees raise tickets, support agents work them, and a background job keeps an eye on SLA deadlines in the background — flagging tickets that are about to breach their target and auto-escalating the ones that actually do, reassigning them to a team lead. It's the same basic idea behind tools like Jira Service Management or Zendesk, just built from scratch to actually understand how that kind of system works under the hood.
 
-This is a portfolio project built to demonstrate full-stack engineering and QA automation skills for Software Engineer / QA Engineer roles.
+## Why I built it this way
 
----
+I didn't want another CRUD app that just stores data and calls it done. The interesting part of a real helpdesk system isn't the ticket form — it's what happens to a ticket *over time* after it's created. So the core of this project is:
 
-## Why this project exists
+- SLA response/resolution targets are configurable per category and priority (stored as data, not hardcoded if/else chains)
+- A Hangfire background job runs on a schedule, checks every open ticket against its SLA clock, and escalates anything that's breached — it also correctly excludes time a ticket spent "On Hold" so a paused ticket doesn't get unfairly flagged
+- Ticket status changes go through a proper state machine — you can't jump from New straight to Closed, every transition is validated server-side
 
-Most CRUD portfolio projects store data and let a human decide what to do with it. HelpDeskHQ's core feature is a **rules engine + recurring background job** that acts on data over time without anyone touching it:
+## Stack
 
-- SLA targets are **data, not hardcoded logic** — admins configure response/resolution time targets per category and priority.
-- A recurring background job (Hangfire) scans every open ticket on a schedule, calculates elapsed time against its SLA target (excluding any time the ticket spent on hold), and **auto-escalates** any ticket that breaches its deadline — reassigning it to a Team Lead and logging the event.
-- Ticket status follows an enforced state machine (e.g. you cannot jump straight from `New` to `Closed`) — every transition is validated server-side.
+- **Backend:** ASP.NET Core Web API (.NET), Clean Architecture (API / Core / Infrastructure)
+- **Database:** PostgreSQL + EF Core
+- **Background jobs:** Hangfire (SLA escalation job, auto-close job)
+- **Real-time:** SignalR, JWT-authenticated, scoped so users only get updates for tickets they can actually see
+- **Auth:** JWT bearer tokens, PBKDF2 password hashing, role-based authorization
+- **Frontend:** React + TypeScript + Vite, Tailwind
+- **QA:** NUnit, RestSharp, Dapper, Npgsql
 
-This combination — configurable business rules, time-based background processing, and a strict state machine — is intentionally different from typical tutorial projects, and is the same category of problem found in real enterprise ITSM tools.
+## Features
 
----
+**Ticketing**
+- Four roles: Employee, Support Agent, Team Lead, Admin
+- Categories (Hardware, Software, Network, Facilities, Access Request) route to the right team automatically
+- Comment threads, full status-change audit trail
+- Assign/resolve/status-change actions are locked down server-side to staff roles only — an Employee can't call those endpoints directly even if they find them in Swagger
 
-## Tech stack
+**SLA engine**
+- Admin-configurable policy table: response/resolution targets per category × priority
+- Due dates get calculated and stamped on the ticket at creation
+- Background job evaluates elapsed time (minus hold time) against the target, flags At Risk at 80%, Breached at 100%, and auto-escalates to the team's lead
+- A second job auto-closes resolved tickets that sit untouched past a timeout
+- Both jobs skip and log a bad ticket instead of failing the whole batch
 
-| Layer | Technology |
-|---|---|
-| Backend | ASP.NET Core Web API (.NET) |
-| Database | PostgreSQL |
-| ORM | Entity Framework Core |
-| Background jobs | Hangfire (SLA escalation engine, auto-close job) |
-| Real-time | SignalR (live ticket queue & SLA status updates), authenticated via JWT |
-| Auth | JWT Bearer tokens, PBKDF2 password hashing, role-based authorization |
-| Frontend | React + TypeScript + Vite, Tailwind CSS |
-| QA Automation | NUnit, RestSharp, Dapper, Npgsql |
+**Dashboard**
+- Ticket counts by status/priority/team
+- Rolling 30-day SLA compliance rate
+- At-risk / breached tickets sorted by urgency
 
----
+**Real-time**
+- SignalR pushes ticket updates, new comments, and escalations live
+- Hub requires auth, and a client can only join the update group for a ticket they're actually allowed to view
 
-## Core features
+## A note on the backend structure
 
-### Ticketing
-- Role-based access: **Employee**, **Support Agent**, **Team Lead**, **Admin**
-- Tickets categorized by type (Hardware, Software, Network, Facilities, Access Request) and priority (Critical, High, Medium, Low)
-- Automatic routing to the correct support team based on category
-- Full comment thread per ticket
-- Complete, immutable status-change audit history
-- Server-enforced role restrictions on sensitive actions (only Support Agents, Team Leads, and Admins can assign, resolve, or change ticket status)
+I went through this and cleaned up a bunch of stuff after getting it working the first time — replaced a pile of generic `InvalidOperationException` throws with proper typed exceptions (`NotFoundException`, `ConflictException`, `ValidationException`) mapped to real HTTP status codes in a middleware, pulled repeated "does this exist / is this a duplicate" checks out of the admin services into a shared helper, and locked down a couple of things that had no business being open — the Hangfire dashboard had zero auth on it originally, and ticket assignment didn't actually check whether the person you were assigning to was staff. Also moved the JWT key and DB connection string out of `appsettings.json` and into user-secrets, since they were sitting in plaintext before.
 
-### SLA Engine (core feature)
-- Admin-configurable SLA policy table — response and resolution time targets per category × priority combination
-- Every ticket is stamped with calculated due dates at creation time
-- Recurring background job continuously evaluates all open tickets:
-  - Excludes on-hold time from elapsed-time calculations, so paused tickets aren't falsely flagged
-  - Flags tickets approaching breach (**At Risk**)
-  - Auto-escalates tickets that breach their deadline (**Breached** → reassigned to Team Lead)
-- Separate background job auto-closes resolved tickets with no employee response after a configurable timeout
-- Both jobs isolate per-ticket failures, so one bad record can't block the rest of the batch from processing
+None of this changed what the app does — it was about making the code something I can actually walk someone through in an interview without getting caught out.
 
-### Dashboard & Reporting
-- Ticket counts by status, priority, and team
-- SLA compliance rate (rolling 30-day window)
-- Currently at-risk and breached tickets, sorted by urgency
-- Team-level performance view for Team Leads
+## Running it locally
 
-### Real-time updates
-- Live ticket queue updates via SignalR (new tickets, status changes, escalations, new comments) without manual refresh
-- Hub connections are authenticated, and clients can only join update groups for tickets they're authorized to view
+**You'll need:** .NET SDK, Node.js, PostgreSQL (pgAdmin's handy for poking at the DB)
 
-### Architecture & security
-- Centralized exception handling via middleware, with a typed exception hierarchy (`NotFoundException`, `ConflictException`, `ValidationException`) mapped to correct HTTP status codes — controllers stay thin and don't handle errors individually
-- Shared validation helpers eliminate duplicated "not found" / "duplicate" checks across admin services
-- Explicit EF Core foreign-key delete behavior configured for every relationship (no reliance on implicit conventions)
-- Database indexes on frequently filtered columns (ticket status, creation date) to support dashboard and background job queries
-- Hangfire dashboard restricted to Admin-role users only
-- Secrets (JWT signing key, database connection string) stored via `dotnet user-secrets` in development, never committed to source control
-
----
-
-## Running locally
-
-### Prerequisites
-- .NET SDK
-- Node.js
-- PostgreSQL (with pgAdmin)
-
-### Backend
-
-Set up your local secrets first (these are not committed to the repo):
+**Backend** — set up secrets first, don't skip this:
 
 ```bash
 cd backend/HelpDeskHQ.API
@@ -93,16 +65,16 @@ dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Host=localhost;Da
 dotnet user-secrets set "Jwt:Key" "YOUR_OWN_RANDOM_64_CHAR_SECRET"
 ```
 
-Then run the API:
+Then:
 
 ```bash
 dotnet run --project HelpDeskHQ.API
 ```
 
-Swagger UI: `https://localhost:7XXX/swagger`
-Hangfire dashboard: `https://localhost:7XXX/hangfire` (requires logging in as an Admin-role user)
+- Swagger: `https://localhost:7XXX/swagger`
+- Hangfire dashboard: `https://localhost:7XXX/hangfire` — you'll need to be logged in as an Admin to actually see anything, it's not open
 
-### Frontend
+**Frontend:**
 
 ```bash
 cd frontend
@@ -110,38 +82,24 @@ npm install
 npm run dev
 ```
 
-Frontend: `http://localhost:5173`
+Runs on `http://localhost:5173`.
 
-### QA test suite
-
-Backend must be running first.
+**Tests** (backend needs to be running):
 
 ```bash
 cd qa-automation/HelpDeskHQ.Tests
 dotnet test --logger "console;verbosity=detailed"
 ```
 
-See [QA-TESTING.md](./QA-TESTING.md) for full test coverage details.
+More detail on what's covered in [QA-TESTING.md](./QA-TESTING.md).
 
----
+## The test I'm most happy with
 
-## QA automation highlights
-
-The most technically interesting tests in this project validate the **SLA escalation logic** directly:
-
-- A ticket is seeded with a backdated `CreatedAt` timestamp via direct SQL (Dapper)
-- The escalation job's logic is invoked directly (not via the Hangfire scheduler, for fast and deterministic tests)
-- Assertions confirm the ticket's SLA breach status and escalation state updated correctly
-
-This validates time-dependent background business logic, which is a meaningfully different testing skill than standard request/response API testing.
-
----
+The SLA escalation tests are the ones I'd actually talk through in an interview — they seed a ticket with a backdated `CreatedAt` straight into Postgres via Dapper (bypassing the API so I control the exact timestamp), then call the escalation job's logic directly instead of waiting on Hangfire's scheduler, and assert the breach status and escalation record came out right. Testing time-based background logic is a different problem than testing a normal request/response endpoint, and I wanted at least one test in here that proves I can do that.
 
 ## Status
 
-🚧 Actively under development as a portfolio project.
-
----
+Still actively working on this — next up is probably attachments upload, which the data model already supports but nothing in the API exposes yet.
 
 ## Author
 
