@@ -1,7 +1,9 @@
-﻿using HelpDeskHQ.Core.DTOs.Admin;
+﻿using HelpDeskHQ.Core.Common.Exceptions;
+using HelpDeskHQ.Core.DTOs.Admin;
 using HelpDeskHQ.Core.Entities;
 using HelpDeskHQ.Core.Enums;
 using HelpDeskHQ.Core.Interfaces;
+using HelpDeskHQ.Infrastructure.Common;
 using HelpDeskHQ.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -22,48 +24,23 @@ namespace HelpDeskHQ.Infrastructure.Services
                 .Include(p => p.TicketCategory)
                 .ToListAsync();
 
-            return policies.Select(p => new SlaPolicyResponseDto
-            {
-                Id = p.Id,
-                TicketCategoryId = p.TicketCategoryId,
-                CategoryName = p.TicketCategory.Name,
-                Priority = p.Priority.ToString(),
-                ResponseTargetMinutes = p.ResponseTargetMinutes,
-                ResolutionTargetMinutes = p.ResolutionTargetMinutes
-            }).ToList();
+            return policies.Select(MapToDto).ToList();
         }
 
         public async Task<SlaPolicyResponseDto> CreateAsync(CreateSlaPolicyDto request)
         {
-            var category = await _context.TicketCategories.FirstOrDefaultAsync(c => c.Id == request.TicketCategoryId);
-            if (category == null)
-            {
-                throw new InvalidOperationException("Ticket category not found.");
-            }
+            var category = await EntityValidationHelper.GetOrThrowAsync(
+                _context.TicketCategories,
+                c => c.Id == request.TicketCategoryId,
+                "Ticket category not found.");
 
-            if (!Enum.IsDefined(typeof(TicketPriority), request.Priority))
-            {
-                throw new InvalidOperationException("Invalid priority value.");
-            }
+            var priority = ValidateAndParsePriority(request.Priority);
+            ValidateTargetMinutes(request.ResponseTargetMinutes, request.ResolutionTargetMinutes);
 
-            var priority = (TicketPriority)request.Priority;
-
-            var duplicateExists = await _context.SlaPolicies
-                .AnyAsync(p => p.TicketCategoryId == request.TicketCategoryId && p.Priority == priority);
-            if (duplicateExists)
-            {
-                throw new InvalidOperationException("An SLA policy for this category and priority already exists.");
-            }
-
-            if (request.ResponseTargetMinutes <= 0 || request.ResolutionTargetMinutes <= 0)
-            {
-                throw new InvalidOperationException("Target minutes must be greater than zero.");
-            }
-
-            if (request.ResponseTargetMinutes > request.ResolutionTargetMinutes)
-            {
-                throw new InvalidOperationException("Response target cannot be greater than resolution target.");
-            }
+            await EntityValidationHelper.ThrowIfExistsAsync(
+                _context.SlaPolicies,
+                p => p.TicketCategoryId == request.TicketCategoryId && p.Priority == priority,
+                "An SLA policy for this category and priority already exists.");
 
             var policy = new SlaPolicy
             {
@@ -89,36 +66,58 @@ namespace HelpDeskHQ.Infrastructure.Services
 
         public async Task<SlaPolicyResponseDto> UpdateAsync(int policyId, CreateSlaPolicyDto request)
         {
-            var policy = await _context.SlaPolicies
-                .Include(p => p.TicketCategory)
-                .FirstOrDefaultAsync(p => p.Id == policyId);
+            var policy = await EntityValidationHelper.GetOrThrowAsync(
+                _context.SlaPolicies.Include(p => p.TicketCategory),
+                p => p.Id == policyId,
+                "SLA policy not found.");
 
-            if (policy == null)
-            {
-                throw new InvalidOperationException("SLA policy not found.");
-            }
+            var priority = ValidateAndParsePriority(request.Priority);
+            ValidateTargetMinutes(request.ResponseTargetMinutes, request.ResolutionTargetMinutes);
 
-            if (!Enum.IsDefined(typeof(TicketPriority), request.Priority))
-            {
-                throw new InvalidOperationException("Invalid priority value.");
-            }
-
-            if (request.ResponseTargetMinutes <= 0 || request.ResolutionTargetMinutes <= 0)
-            {
-                throw new InvalidOperationException("Target minutes must be greater than zero.");
-            }
-
-            if (request.ResponseTargetMinutes > request.ResolutionTargetMinutes)
-            {
-                throw new InvalidOperationException("Response target cannot be greater than resolution target.");
-            }
-
-            policy.Priority = (TicketPriority)request.Priority;
+            policy.Priority = priority;
             policy.ResponseTargetMinutes = request.ResponseTargetMinutes;
             policy.ResolutionTargetMinutes = request.ResolutionTargetMinutes;
 
             await _context.SaveChangesAsync();
 
+            return MapToDto(policy);
+        }
+
+        public async Task DeleteAsync(int policyId)
+        {
+            var policy = await EntityValidationHelper.GetOrThrowAsync(
+                _context.SlaPolicies,
+                p => p.Id == policyId,
+                "SLA policy not found.");
+
+            _context.SlaPolicies.Remove(policy);
+            await _context.SaveChangesAsync();
+        }
+
+        private static TicketPriority ValidateAndParsePriority(int priorityValue)
+        {
+            if (!Enum.IsDefined(typeof(TicketPriority), priorityValue))
+            {
+                throw new ValidationException("Invalid priority value.");
+            }
+            return (TicketPriority)priorityValue;
+        }
+
+        private static void ValidateTargetMinutes(int responseTarget, int resolutionTarget)
+        {
+            if (responseTarget <= 0 || resolutionTarget <= 0)
+            {
+                throw new ValidationException("Target minutes must be greater than zero.");
+            }
+
+            if (responseTarget > resolutionTarget)
+            {
+                throw new ValidationException("Response target cannot be greater than resolution target.");
+            }
+        }
+
+        private static SlaPolicyResponseDto MapToDto(SlaPolicy policy)
+        {
             return new SlaPolicyResponseDto
             {
                 Id = policy.Id,
@@ -128,18 +127,6 @@ namespace HelpDeskHQ.Infrastructure.Services
                 ResponseTargetMinutes = policy.ResponseTargetMinutes,
                 ResolutionTargetMinutes = policy.ResolutionTargetMinutes
             };
-        }
-
-        public async Task DeleteAsync(int policyId)
-        {
-            var policy = await _context.SlaPolicies.FirstOrDefaultAsync(p => p.Id == policyId);
-            if (policy == null)
-            {
-                throw new InvalidOperationException("SLA policy not found.");
-            }
-
-            _context.SlaPolicies.Remove(policy);
-            await _context.SaveChangesAsync();
         }
     }
 }

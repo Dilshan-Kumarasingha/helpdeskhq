@@ -3,9 +3,12 @@ import { Link } from 'react-router-dom';
 import { getTickets } from '../api/tickets';
 import type { Ticket } from '../types';
 import Badge from '../components/Badge';
+import { useAuth } from '../context/AuthContext';
 
 export default function TicketList() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
+  const { user } = useAuth();
+  const isEmployee = user?.role === 'Employee';
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -30,12 +33,14 @@ export default function TicketList() {
     <div className="p-8 max-w-6xl mx-auto">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold">Tickets</h1>
-        <Link
-          to="/tickets/new"
-          className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
-        >
-          + New Ticket
-        </Link>
+        {isEmployee && (
+          <Link
+            to="/tickets/new"
+            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+          >
+            + New Ticket
+          </Link>
+        )}
       </div>
 
       {tickets.length === 0 ? (

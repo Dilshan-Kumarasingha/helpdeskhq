@@ -1,4 +1,5 @@
-﻿using HelpDeskHQ.Core.DTOs.Tickets;
+﻿using HelpDeskHQ.Core.Common.Exceptions;
+using HelpDeskHQ.Core.DTOs.Tickets;
 using HelpDeskHQ.Core.Entities;
 using HelpDeskHQ.Core.Enums;
 using HelpDeskHQ.Core.Interfaces;
@@ -12,6 +13,8 @@ namespace HelpDeskHQ.Infrastructure.Services
         private readonly HelpDeskHQDbContext _context;
         private readonly ISlaService _slaService;
         private readonly IRealtimeNotifier _realtimeNotifier;
+
+        private const int MaxTicketNumberRetries = 3;
 
         public TicketService(HelpDeskHQDbContext context, ISlaService slaService, IRealtimeNotifier realtimeNotifier)
         {
@@ -27,12 +30,12 @@ namespace HelpDeskHQ.Infrastructure.Services
 
             if (category == null)
             {
-                throw new InvalidOperationException("Invalid ticket category.");
+                throw new NotFoundException("Invalid ticket category.");
             }
 
             if (!Enum.IsDefined(typeof(TicketPriority), request.Priority))
             {
-                throw new InvalidOperationException("Invalid priority value.");
+                throw new ValidationException("Invalid priority value.");
             }
 
             var priority = (TicketPriority)request.Priority;
@@ -41,11 +44,9 @@ namespace HelpDeskHQ.Infrastructure.Services
             var (firstResponseDueAt, resolutionDueAt) = await _slaService.CalculateDueDatesAsync(
                 category.Id, priority, createdAt);
 
-            var ticketNumber = await GenerateTicketNumberAsync();
-
             var ticket = new Ticket
             {
-                TicketNumber = ticketNumber,
+                TicketNumber = await GenerateTicketNumberAsync(),
                 Title = request.Title,
                 Description = request.Description,
                 TicketCategoryId = category.Id,
@@ -60,28 +61,8 @@ namespace HelpDeskHQ.Infrastructure.Services
                 EscalationLevel = 0
             };
 
-            const int maxRetries = 3;
-            var attempt = 0;
+            await SaveTicketWithRetryOnDuplicateNumberAsync(ticket);
 
-            while (true)
-            {
-                try
-                {
-                    _context.Tickets.Add(ticket);
-                    await _context.SaveChangesAsync();
-                    break; // success
-                }
-                catch (DbUpdateException) when (attempt < maxRetries)
-                {
-                    // Likely a unique constraint violation on TicketNumber due to a race
-                    // condition between concurrent requests. Detach and retry with a fresh number.
-                    _context.Entry(ticket).State = EntityState.Detached;
-                    attempt++;
-                    ticket.TicketNumber = await GenerateTicketNumberAsync();
-                }
-            }
-
-            // Record the initial status in the audit history
             _context.TicketStatusHistories.Add(new TicketStatusHistory
             {
                 TicketId = ticket.Id,
@@ -93,58 +74,49 @@ namespace HelpDeskHQ.Infrastructure.Services
             });
             await _context.SaveChangesAsync();
 
-            var dto = await MapToResponseDto(ticket.Id);
+            var dto = await MapToResponseDtoAsync(ticket.Id);
             await _realtimeNotifier.NotifyTicketUpdatedAsync(ticket.Id, dto);
             return dto;
+        }
+
+        /// <summary>
+        /// Saves a newly created ticket, retrying with a fresh ticket number
+        /// if a concurrent request caused a unique-constraint collision.
+        /// </summary>
+        private async Task SaveTicketWithRetryOnDuplicateNumberAsync(Ticket ticket)
+        {
+            var attempt = 0;
+            _context.Tickets.Add(ticket);
+
+            while (true)
+            {
+                try
+                {
+                    await _context.SaveChangesAsync();
+                    return;
+                }
+                catch (DbUpdateException) when (attempt < MaxTicketNumberRetries)
+                {
+                    _context.Entry(ticket).State = EntityState.Detached;
+                    attempt++;
+                    ticket.TicketNumber = await GenerateTicketNumberAsync();
+                    _context.Tickets.Add(ticket);
+                }
+            }
         }
 
         private async Task<string> GenerateTicketNumberAsync()
         {
             var year = DateTime.UtcNow.Year;
-            var countThisYear = await _context.Tickets
-                .CountAsync(t => t.CreatedAt.Year == year);
-
+            var countThisYear = await _context.Tickets.CountAsync(t => t.CreatedAt.Year == year);
             var nextNumber = countThisYear + 1;
             return $"HD-{year}-{nextNumber:D5}";
-        }
-
-        private async Task<TicketResponseDto> MapToResponseDto(int ticketId)
-        {
-            var ticket = await _context.Tickets
-                .Include(t => t.TicketCategory)
-                .Include(t => t.RaisedByUser)
-                .Include(t => t.AssignedAgent)
-                .Include(t => t.Team)
-                .FirstAsync(t => t.Id == ticketId);
-
-            return new TicketResponseDto
-            {
-                Id = ticket.Id,
-                TicketNumber = ticket.TicketNumber,
-                Title = ticket.Title,
-                Description = ticket.Description,
-                Category = ticket.TicketCategory.Name,
-                Priority = ticket.Priority.ToString(),
-                Status = ticket.Status.ToString(),
-                RaisedByName = ticket.RaisedByUser.FullName,
-                AssignedAgentName = ticket.AssignedAgent?.FullName,
-                TeamName = ticket.Team.Name,
-                CreatedAt = ticket.CreatedAt,
-                FirstResponseDueAt = ticket.FirstResponseDueAt,
-                ResolutionDueAt = ticket.ResolutionDueAt,
-                FirstRespondedAt = ticket.FirstRespondedAt,
-                ResolvedAt = ticket.ResolvedAt,
-                SlaBreachStatus = ticket.SlaBreachStatus.ToString(),
-                EscalationLevel = ticket.EscalationLevel
-            };
         }
 
         public async Task<TicketResponseDto?> GetTicketByIdAsync(int ticketId)
         {
             var exists = await _context.Tickets.AnyAsync(t => t.Id == ticketId);
-            if (!exists) return null;
-
-            return await MapToResponseDto(ticketId);
+            return exists ? await MapToResponseDtoAsync(ticketId) : null;
         }
 
         public async Task<List<TicketResponseDto>> GetTicketsAsync(int requestingUserId, string requestingUserRole)
@@ -155,33 +127,16 @@ namespace HelpDeskHQ.Infrastructure.Services
                 .Include(t => t.AssignedAgent)
                 .Include(t => t.Team);
 
-            if (requestingUserRole == "Employee")
+            // Employees only see tickets they personally raised.
+            // Staff roles (SupportAgent, TeamLead, Admin) see everything for now —
+            // revisit if team-scoped visibility is required later.
+            if (requestingUserRole == nameof(UserRole.Employee))
             {
                 query = query.Where(t => t.RaisedByUserId == requestingUserId);
             }
 
             var tickets = await query.OrderByDescending(t => t.CreatedAt).ToListAsync();
-
-            return tickets.Select(ticket => new TicketResponseDto
-            {
-                Id = ticket.Id,
-                TicketNumber = ticket.TicketNumber,
-                Title = ticket.Title,
-                Description = ticket.Description,
-                Category = ticket.TicketCategory.Name,
-                Priority = ticket.Priority.ToString(),
-                Status = ticket.Status.ToString(),
-                RaisedByName = ticket.RaisedByUser.FullName,
-                AssignedAgentName = ticket.AssignedAgent?.FullName,
-                TeamName = ticket.Team.Name,
-                CreatedAt = ticket.CreatedAt,
-                FirstResponseDueAt = ticket.FirstResponseDueAt,
-                ResolutionDueAt = ticket.ResolutionDueAt,
-                FirstRespondedAt = ticket.FirstRespondedAt,
-                ResolvedAt = ticket.ResolvedAt,
-                SlaBreachStatus = ticket.SlaBreachStatus.ToString(),
-                EscalationLevel = ticket.EscalationLevel
-            }).ToList();
+            return tickets.Select(MapToResponseDto).ToList();
         }
 
         public async Task<TicketResponseDto> AssignTicketAsync(int ticketId, int agentUserId, int changedByUserId)
@@ -189,13 +144,18 @@ namespace HelpDeskHQ.Infrastructure.Services
             var ticket = await _context.Tickets.FirstOrDefaultAsync(t => t.Id == ticketId);
             if (ticket == null)
             {
-                throw new InvalidOperationException("Ticket not found.");
+                throw new NotFoundException("Ticket not found.");
             }
 
-            var agentExists = await _context.Users.AnyAsync(u => u.Id == agentUserId);
-            if (!agentExists)
+            var agent = await _context.Users.FirstOrDefaultAsync(u => u.Id == agentUserId);
+            if (agent == null)
             {
-                throw new InvalidOperationException("Assigned agent not found.");
+                throw new NotFoundException("Assigned agent not found.");
+            }
+
+            if (agent.Role is not (UserRole.SupportAgent or UserRole.TeamLead or UserRole.Admin))
+            {
+                throw new ValidationException("Tickets can only be assigned to support staff (agent, team lead, or admin).");
             }
 
             var oldStatus = ticket.Status;
@@ -208,10 +168,9 @@ namespace HelpDeskHQ.Infrastructure.Services
             }
 
             await _context.SaveChangesAsync();
-
             await AddStatusHistoryAsync(ticket.Id, oldStatus, ticket.Status, changedByUserId, "Agent assigned");
 
-            var dto = await MapToResponseDto(ticket.Id);
+            var dto = await MapToResponseDtoAsync(ticket.Id);
             await _realtimeNotifier.NotifyTicketUpdatedAsync(ticket.Id, dto);
             return dto;
         }
@@ -221,12 +180,12 @@ namespace HelpDeskHQ.Infrastructure.Services
             var ticket = await _context.Tickets.FirstOrDefaultAsync(t => t.Id == ticketId);
             if (ticket == null)
             {
-                throw new InvalidOperationException("Ticket not found.");
+                throw new NotFoundException("Ticket not found.");
             }
 
             if (!Enum.IsDefined(typeof(TicketStatus), newStatus))
             {
-                throw new InvalidOperationException("Invalid status value.");
+                throw new ValidationException("Invalid status value.");
             }
 
             var targetStatus = (TicketStatus)newStatus;
@@ -252,10 +211,9 @@ namespace HelpDeskHQ.Infrastructure.Services
 
             ticket.Status = targetStatus;
             await _context.SaveChangesAsync();
-
             await AddStatusHistoryAsync(ticket.Id, oldStatus, targetStatus, changedByUserId, note);
 
-            var dto = await MapToResponseDto(ticket.Id);
+            var dto = await MapToResponseDtoAsync(ticket.Id);
             await _realtimeNotifier.NotifyTicketUpdatedAsync(ticket.Id, dto);
             return dto;
         }
@@ -265,7 +223,7 @@ namespace HelpDeskHQ.Infrastructure.Services
             var ticket = await _context.Tickets.FirstOrDefaultAsync(t => t.Id == ticketId);
             if (ticket == null)
             {
-                throw new InvalidOperationException("Ticket not found.");
+                throw new NotFoundException("Ticket not found.");
             }
 
             ValidateTransition(ticket.Status, TicketStatus.Resolved);
@@ -276,10 +234,9 @@ namespace HelpDeskHQ.Infrastructure.Services
             ticket.ResolvedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
-
             await AddStatusHistoryAsync(ticket.Id, oldStatus, TicketStatus.Resolved, changedByUserId, "Resolved");
 
-            var dto = await MapToResponseDto(ticket.Id);
+            var dto = await MapToResponseDtoAsync(ticket.Id);
             await _realtimeNotifier.NotifyTicketUpdatedAsync(ticket.Id, dto);
             return dto;
         }
@@ -289,7 +246,7 @@ namespace HelpDeskHQ.Infrastructure.Services
             var ticketExists = await _context.Tickets.AnyAsync(t => t.Id == ticketId);
             if (!ticketExists)
             {
-                throw new InvalidOperationException("Ticket not found.");
+                throw new NotFoundException("Ticket not found.");
             }
 
             var comment = new TicketComment
@@ -334,6 +291,8 @@ namespace HelpDeskHQ.Infrastructure.Services
             }).ToList();
         }
 
+        // ----- Status transition rules -----
+
         private static readonly Dictionary<TicketStatus, TicketStatus[]> ValidTransitions = new()
         {
             [TicketStatus.New] = new[] { TicketStatus.Assigned, TicketStatus.Escalated },
@@ -352,8 +311,7 @@ namespace HelpDeskHQ.Infrastructure.Services
 
             if (!ValidTransitions.TryGetValue(from, out var allowed) || !allowed.Contains(to))
             {
-                throw new InvalidOperationException(
-                    $"Invalid status transition: cannot move from {from} to {to}.");
+                throw new ValidationException($"Invalid status transition: cannot move from {from} to {to}.");
             }
         }
 
@@ -369,6 +327,44 @@ namespace HelpDeskHQ.Infrastructure.Services
                 Note = note
             });
             await _context.SaveChangesAsync();
+        }
+
+        // ----- Shared mapping (single source of truth for Ticket -> DTO) -----
+
+        private async Task<TicketResponseDto> MapToResponseDtoAsync(int ticketId)
+        {
+            var ticket = await _context.Tickets
+                .Include(t => t.TicketCategory)
+                .Include(t => t.RaisedByUser)
+                .Include(t => t.AssignedAgent)
+                .Include(t => t.Team)
+                .FirstAsync(t => t.Id == ticketId);
+
+            return MapToResponseDto(ticket);
+        }
+
+        private static TicketResponseDto MapToResponseDto(Ticket ticket)
+        {
+            return new TicketResponseDto
+            {
+                Id = ticket.Id,
+                TicketNumber = ticket.TicketNumber,
+                Title = ticket.Title,
+                Description = ticket.Description,
+                Category = ticket.TicketCategory.Name,
+                Priority = ticket.Priority.ToString(),
+                Status = ticket.Status.ToString(),
+                RaisedByName = ticket.RaisedByUser.FullName,
+                AssignedAgentName = ticket.AssignedAgent?.FullName,
+                TeamName = ticket.Team.Name,
+                CreatedAt = ticket.CreatedAt,
+                FirstResponseDueAt = ticket.FirstResponseDueAt,
+                ResolutionDueAt = ticket.ResolutionDueAt,
+                FirstRespondedAt = ticket.FirstRespondedAt,
+                ResolvedAt = ticket.ResolvedAt,
+                SlaBreachStatus = ticket.SlaBreachStatus.ToString(),
+                EscalationLevel = ticket.EscalationLevel
+            };
         }
     }
 }

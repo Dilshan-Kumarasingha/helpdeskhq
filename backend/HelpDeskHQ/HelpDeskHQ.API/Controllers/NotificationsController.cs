@@ -1,4 +1,4 @@
-﻿using System.Security.Claims;
+﻿using HelpDeskHQ.API.Common;
 using HelpDeskHQ.Core.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -21,7 +21,7 @@ namespace HelpDeskHQ.API.Controllers
         [HttpGet]
         public async Task<IActionResult> GetMyNotifications()
         {
-            var userId = GetUserId();
+            var userId = User.GetUserId();
             var notifications = await _notificationService.GetMyNotificationsAsync(userId);
             return Ok(notifications);
         }
@@ -30,23 +30,9 @@ namespace HelpDeskHQ.API.Controllers
         [HttpPatch("{id}/read")]
         public async Task<IActionResult> MarkAsRead(int id)
         {
-            var userId = GetUserId();
-
-            try
-            {
-                await _notificationService.MarkAsReadAsync(id, userId);
-                return Ok(new { message = "Notification marked as read." });
-            }
-            catch (InvalidOperationException ex)
-            {
-                return NotFound(new { message = ex.Message });
-            }
-        }
-
-        private int GetUserId()
-        {
-            var idClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            return int.Parse(idClaim!);
+            var userId = User.GetUserId();
+            await _notificationService.MarkAsReadAsync(id, userId);
+            return Ok(new { message = "Notification marked as read." });
         }
     }
 }

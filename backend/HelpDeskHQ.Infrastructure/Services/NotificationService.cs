@@ -1,4 +1,5 @@
-﻿using HelpDeskHQ.Core.DTOs.Notifications;
+﻿using HelpDeskHQ.Core.Common.Exceptions;
+using HelpDeskHQ.Core.DTOs.Notifications;
 using HelpDeskHQ.Core.Interfaces;
 using HelpDeskHQ.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
@@ -38,7 +39,7 @@ namespace HelpDeskHQ.Infrastructure.Services
 
             if (notification == null)
             {
-                throw new InvalidOperationException("Notification not found.");
+                throw new NotFoundException("Notification not found.");
             }
 
             notification.IsRead = true;

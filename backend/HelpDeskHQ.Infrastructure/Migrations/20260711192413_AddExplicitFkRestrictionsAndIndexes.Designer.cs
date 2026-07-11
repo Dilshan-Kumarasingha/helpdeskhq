@@ -3,6 +3,7 @@ using System;
 using HelpDeskHQ.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace HelpDeskHQ.Infrastructure.Migrations
 {
     [DbContext(typeof(HelpDeskHQDbContext))]
-    partial class HelpDeskHQDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260711192413_AddExplicitFkRestrictionsAndIndexes")]
+    partial class AddExplicitFkRestrictionsAndIndexes
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

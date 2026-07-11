@@ -51,3 +51,14 @@ export interface DashboardSummary {
   breachedCount: number;
   slaComplianceRatePercent: number;
 }
+
+export const TicketStatusEnum = {
+  New: 0,
+  Assigned: 1,
+  InProgress: 2,
+  OnHold: 3,
+  Resolved: 4,
+  Closed: 5,
+  Reopened: 6,
+  Escalated: 7,
+} as const;

@@ -27,6 +27,8 @@ namespace HelpDeskHQ.Infrastructure.Data
         {
             base.OnModelCreating(modelBuilder);
 
+            // ----- Ticket relationships -----
+
             modelBuilder.Entity<Ticket>()
                 .HasOne(t => t.RaisedByUser)
                 .WithMany(u => u.RaisedTickets)
@@ -51,11 +53,21 @@ namespace HelpDeskHQ.Infrastructure.Data
                 .HasForeignKey(t => t.TeamId)
                 .OnDelete(DeleteBehavior.Restrict);
 
+            // ----- Ticket child records (cascade with the ticket) -----
+
             modelBuilder.Entity<TicketComment>()
                 .HasOne(c => c.Ticket)
                 .WithMany(t => t.Comments)
                 .HasForeignKey(c => c.TicketId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            // Comment author: restrict so deleting a user never cascades
+            // into deleting ticket history/comments.
+            modelBuilder.Entity<TicketComment>()
+                .HasOne(c => c.AuthorUser)
+                .WithMany()
+                .HasForeignKey(c => c.AuthorUserId)
+                .OnDelete(DeleteBehavior.Restrict);
 
             modelBuilder.Entity<TicketAttachment>()
                 .HasOne(a => a.Ticket)
@@ -69,6 +81,13 @@ namespace HelpDeskHQ.Infrastructure.Data
                 .HasForeignKey(h => h.TicketId)
                 .OnDelete(DeleteBehavior.Cascade);
 
+            // Who made the change: restrict, same reasoning as comment author.
+            modelBuilder.Entity<TicketStatusHistory>()
+                .HasOne(h => h.ChangedByUser)
+                .WithMany()
+                .HasForeignKey(h => h.ChangedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+
             modelBuilder.Entity<TicketEscalation>()
                 .HasOne(e => e.Ticket)
                 .WithMany(t => t.Escalations)
@@ -81,21 +100,44 @@ namespace HelpDeskHQ.Infrastructure.Data
                 .HasForeignKey(e => e.EscalatedToUserId)
                 .OnDelete(DeleteBehavior.Restrict);
 
+            // ----- Notifications -----
+
             modelBuilder.Entity<Notification>()
                 .HasOne(n => n.Ticket)
                 .WithMany()
                 .HasForeignKey(n => n.TicketId)
                 .OnDelete(DeleteBehavior.Cascade);
 
-            // Ensure email is unique
+            // Recipient user: restrict, so deleting a user doesn't silently
+            // wipe notification history tied to other users/tickets.
+            modelBuilder.Entity<Notification>()
+                .HasOne(n => n.User)
+                .WithMany()
+                .HasForeignKey(n => n.UserId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // ----- Uniqueness constraints -----
+
             modelBuilder.Entity<User>()
                 .HasIndex(u => u.Email)
                 .IsUnique();
 
-            // Ensure ticket number is unique
             modelBuilder.Entity<Ticket>()
                 .HasIndex(t => t.TicketNumber)
                 .IsUnique();
+
+            // ----- Query performance indexes -----
+            // These fields are filtered on constantly: ticket lists, the
+            // dashboard, and the two recurring background jobs.
+
+            modelBuilder.Entity<Ticket>()
+                .HasIndex(t => t.Status);
+
+            modelBuilder.Entity<Ticket>()
+                .HasIndex(t => t.AssignedAgentId);
+
+            modelBuilder.Entity<Ticket>()
+                .HasIndex(t => t.CreatedAt);
         }
     }
 }

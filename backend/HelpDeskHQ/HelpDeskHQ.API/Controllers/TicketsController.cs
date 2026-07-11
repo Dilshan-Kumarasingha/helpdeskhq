@@ -1,5 +1,6 @@
-﻿using System.Security.Claims;
+﻿using HelpDeskHQ.API.Common;
 using HelpDeskHQ.Core.DTOs.Tickets;
+using HelpDeskHQ.Core.Enums;
 using HelpDeskHQ.Core.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -18,29 +19,21 @@ namespace HelpDeskHQ.API.Controllers
             _ticketService = ticketService;
         }
 
-        // POST /api/tickets — Employee creates a ticket
+        // POST /api/tickets — Any authenticated user can raise a ticket
         [HttpPost]
         public async Task<IActionResult> CreateTicket([FromBody] CreateTicketDto request)
         {
-            var userId = GetUserId();
-
-            try
-            {
-                var result = await _ticketService.CreateTicketAsync(request, userId);
-                return Ok(result);
-            }
-            catch (InvalidOperationException ex)
-            {
-                return BadRequest(new { message = ex.Message });
-            }
+            var userId = User.GetUserId();
+            var result = await _ticketService.CreateTicketAsync(request, userId);
+            return Ok(result);
         }
 
-        // GET /api/tickets — List tickets (role-aware)
+        // GET /api/tickets — List tickets (role-aware filtering happens in the service)
         [HttpGet]
         public async Task<IActionResult> GetTickets()
         {
-            var userId = GetUserId();
-            var role = GetUserRole();
+            var userId = User.GetUserId();
+            var role = User.GetUserRole();
 
             var tickets = await _ticketService.GetTicketsAsync(userId, role);
             return Ok(tickets);
@@ -57,102 +50,71 @@ namespace HelpDeskHQ.API.Controllers
             return Ok(ticket);
         }
 
-        // PATCH /api/tickets/{id}/assign — Assign an agent to a ticket
+        // PATCH /api/tickets/{id}/assign — Only agents/leads/admins can assign
         [HttpPatch("{id}/assign")]
+        [Authorize(Roles = "SupportAgent,TeamLead,Admin")]
         public async Task<IActionResult> AssignTicket(int id, [FromBody] AssignTicketDto request)
         {
-            var changedByUserId = GetUserId();
-
-            try
-            {
-                var result = await _ticketService.AssignTicketAsync(id, request.AgentUserId, changedByUserId);
-                return Ok(result);
-            }
-            catch (InvalidOperationException ex)
-            {
-                return BadRequest(new { message = ex.Message });
-            }
+            var changedByUserId = User.GetUserId();
+            var result = await _ticketService.AssignTicketAsync(id, request.AgentUserId, changedByUserId);
+            return Ok(result);
         }
 
-        // PATCH /api/tickets/{id}/status — Change ticket status
+        // PATCH /api/tickets/{id}/status — Only agents/leads/admins can change status directly
         [HttpPatch("{id}/status")]
+        [Authorize(Roles = "SupportAgent,TeamLead,Admin")]
         public async Task<IActionResult> ChangeStatus(int id, [FromBody] ChangeStatusDto request)
         {
-            var changedByUserId = GetUserId();
-
-            try
-            {
-                var result = await _ticketService.ChangeStatusAsync(id, request.NewStatus, changedByUserId, request.Note);
-                return Ok(result);
-            }
-            catch (InvalidOperationException ex)
-            {
-                return BadRequest(new { message = ex.Message });
-            }
+            var changedByUserId = User.GetUserId();
+            var result = await _ticketService.ChangeStatusAsync(id, request.NewStatus, changedByUserId, request.Note);
+            return Ok(result);
         }
 
-        // PATCH /api/tickets/{id}/resolve — Agent resolves a ticket
+        // PATCH /api/tickets/{id}/resolve — Only agents/leads/admins can resolve
         [HttpPatch("{id}/resolve")]
+        [Authorize(Roles = "SupportAgent,TeamLead,Admin")]
         public async Task<IActionResult> ResolveTicket(int id, [FromBody] ResolveTicketDto request)
         {
-            var changedByUserId = GetUserId();
-
-            try
-            {
-                var result = await _ticketService.ResolveTicketAsync(id, request.ResolutionNotes, changedByUserId);
-                return Ok(result);
-            }
-            catch (InvalidOperationException ex)
-            {
-                return BadRequest(new { message = ex.Message });
-            }
+            var changedByUserId = User.GetUserId();
+            var result = await _ticketService.ResolveTicketAsync(id, request.ResolutionNotes, changedByUserId);
+            return Ok(result);
         }
 
         // PATCH /api/tickets/{id}/confirm — Employee confirms resolution → Closed
         [HttpPatch("{id}/confirm")]
         public async Task<IActionResult> ConfirmResolution(int id)
         {
-            var changedByUserId = GetUserId();
-
-            try
-            {
-                // Confirmed = move to Closed (status int 5)
-                var result = await _ticketService.ChangeStatusAsync(id, (int)HelpDeskHQ.Core.Enums.TicketStatus.Closed, changedByUserId, "Employee confirmed resolution");
-                return Ok(result);
-            }
-            catch (InvalidOperationException ex)
-            {
-                return BadRequest(new { message = ex.Message });
-            }
+            var changedByUserId = User.GetUserId();
+            var result = await _ticketService.ChangeStatusAsync(
+                id, (int)TicketStatus.Closed, changedByUserId, "Employee confirmed resolution");
+            return Ok(result);
         }
 
         // PATCH /api/tickets/{id}/reopen — Employee rejects resolution → Reopened
         [HttpPatch("{id}/reopen")]
         public async Task<IActionResult> ReopenTicket(int id)
         {
-            var changedByUserId = GetUserId();
-
-            try
-            {
-                // Reopened = status int 6
-                var result = await _ticketService.ChangeStatusAsync(id, (int)HelpDeskHQ.Core.Enums.TicketStatus.Reopened, changedByUserId, "Employee rejected resolution — ticket reopened");
-                return Ok(result);
-            }
-            catch (InvalidOperationException ex)
-            {
-                return BadRequest(new { message = ex.Message });
-            }
+            var changedByUserId = User.GetUserId();
+            var result = await _ticketService.ChangeStatusAsync(
+                id, (int)TicketStatus.Reopened, changedByUserId, "Employee rejected resolution — ticket reopened");
+            return Ok(result);
         }
 
-        private int GetUserId()
+        // POST /api/tickets/{id}/comments — Add a comment
+        [HttpPost("{id}/comments")]
+        public async Task<IActionResult> AddComment(int id, [FromBody] AddCommentDto request)
         {
-            var idClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            return int.Parse(idClaim!);
+            var authorUserId = User.GetUserId();
+            var result = await _ticketService.AddCommentAsync(id, authorUserId, request.Content);
+            return Ok(result);
         }
 
-        private string GetUserRole()
+        // GET /api/tickets/{id}/comments — List comments
+        [HttpGet("{id}/comments")]
+        public async Task<IActionResult> GetComments(int id)
         {
-            return User.FindFirstValue(ClaimTypes.Role) ?? string.Empty;
+            var result = await _ticketService.GetCommentsAsync(id);
+            return Ok(result);
         }
     }
 }

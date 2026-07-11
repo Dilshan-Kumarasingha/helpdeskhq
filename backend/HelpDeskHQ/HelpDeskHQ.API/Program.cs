@@ -6,6 +6,7 @@ using Microsoft.IdentityModel.Tokens;
 using System.Text;
 using Hangfire;
 using Hangfire.PostgreSql;
+using Hangfire.Dashboard;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -29,9 +30,7 @@ builder.Services.AddDbContext<HelpDeskHQ.Infrastructure.Data.HelpDeskHQDbContext
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<ISlaService, SlaService>();
 builder.Services.AddScoped<ITicketService, TicketService>();
-
 builder.Services.AddScoped<INotificationService, NotificationService>();
-
 builder.Services.AddScoped<IDashboardService, DashboardService>();
 builder.Services.AddScoped<ITeamService, TeamService>();
 builder.Services.AddScoped<ICategoryService, CategoryService>();
@@ -69,6 +68,25 @@ builder.Services.AddAuthentication(options =>
         IssuerSigningKey = new SymmetricSecurityKey(
             Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!))
     };
+
+    // SignalR's browser client can't always set the Authorization header on
+    // the WebSocket handshake, so it sends the token via query string instead
+    // (?access_token=...). This reads it from there specifically for hub requests.
+    options.Events = new JwtBearerEvents
+    {
+        OnMessageReceived = context =>
+        {
+            var accessToken = context.Request.Query["access_token"];
+            var path = context.HttpContext.Request.Path;
+
+            if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+            {
+                context.Token = accessToken;
+            }
+
+            return Task.CompletedTask;
+        }
+    };
 });
 
 builder.Services.AddAuthorization();
@@ -103,8 +121,11 @@ app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
 
-// Hangfire dashboard — accessible at /hangfire in dev
-app.UseHangfireDashboard("/hangfire");
+// Hangfire dashboard — restricted to Admins only (see AdminOnlyDashboardAuthFilter below)
+app.UseHangfireDashboard("/hangfire", new DashboardOptions
+{
+    Authorization = new[] { new AdminOnlyDashboardAuthFilter() }
+});
 
 app.MapControllers();
 app.MapHub<HelpDeskHQ.API.Hubs.TicketHub>("/hubs/tickets");
@@ -121,3 +142,18 @@ RecurringJob.AddOrUpdate<HelpDeskHQ.API.Jobs.AutoCloseJob>(
     "0 * * * *"); // every hour
 
 app.Run();
+
+/// <summary>
+/// Restricts the Hangfire dashboard to authenticated users with the Admin role.
+/// Without this, anyone who finds /hangfire could view, trigger, or delete
+/// background jobs.
+/// </summary>
+public class AdminOnlyDashboardAuthFilter : IDashboardAuthorizationFilter
+{
+    public bool Authorize(DashboardContext context)
+    {
+        var httpContext = context.GetHttpContext();
+        return httpContext.User.Identity?.IsAuthenticated == true
+            && httpContext.User.IsInRole("Admin");
+    }
+}

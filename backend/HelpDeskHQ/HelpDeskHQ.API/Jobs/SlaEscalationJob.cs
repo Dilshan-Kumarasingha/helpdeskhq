@@ -10,6 +10,16 @@ namespace HelpDeskHQ.API.Jobs
         private readonly HelpDeskHQDbContext _context;
         private readonly ILogger<SlaEscalationJob> _logger;
 
+        private static readonly TicketStatus[] OpenStatuses =
+        {
+            TicketStatus.New,
+            TicketStatus.Assigned,
+            TicketStatus.InProgress,
+            TicketStatus.OnHold,
+            TicketStatus.Reopened,
+            TicketStatus.Escalated
+        };
+
         public SlaEscalationJob(HelpDeskHQDbContext context, ILogger<SlaEscalationJob> logger)
         {
             _context = context;
@@ -20,27 +30,25 @@ namespace HelpDeskHQ.API.Jobs
         {
             _logger.LogInformation("SlaEscalationJob started at {Time}", DateTime.UtcNow);
 
-            var openStatuses = new[]
-            {
-                TicketStatus.New,
-                TicketStatus.Assigned,
-                TicketStatus.InProgress,
-                TicketStatus.OnHold,
-                TicketStatus.Reopened,
-                TicketStatus.Escalated
-            };
-
             var tickets = await _context.Tickets
                 .Include(t => t.Team)
                     .ThenInclude(team => team.Members)
-                .Where(t => openStatuses.Contains(t.Status))
+                .Where(t => OpenStatuses.Contains(t.Status))
                 .ToListAsync();
 
             _logger.LogInformation("Checking {Count} open tickets for SLA breaches", tickets.Count);
 
             foreach (var ticket in tickets)
             {
-                await EvaluateTicketAsync(ticket);
+                try
+                {
+                    EvaluateTicket(ticket);
+                }
+                catch (Exception ex)
+                {
+                    // One bad ticket should never stop the whole batch from being evaluated.
+                    _logger.LogError(ex, "Failed to evaluate SLA for ticket {TicketId}", ticket.Id);
+                }
             }
 
             await _context.SaveChangesAsync();
@@ -48,40 +56,33 @@ namespace HelpDeskHQ.API.Jobs
             _logger.LogInformation("SlaEscalationJob finished at {Time}", DateTime.UtcNow);
         }
 
-        private async Task EvaluateTicketAsync(Ticket ticket)
+        private void EvaluateTicket(Ticket ticket)
         {
             var now = DateTime.UtcNow;
 
+            // How much of the ticket's SLA clock has actually elapsed, excluding
+            // any time spent OnHold (that time doesn't count against the SLA).
+            var onHoldMinutesSoFar = ticket.TotalOnHoldMinutes;
+            if (ticket.OnHoldSince != null)
+            {
+                onHoldMinutesSoFar += (int)(now - ticket.OnHoldSince.Value).TotalMinutes;
+            }
+
+            var rawElapsedMinutes = (now - ticket.CreatedAt).TotalMinutes;
+            var effectiveElapsedMinutes = rawElapsedMinutes - onHoldMinutesSoFar;
+
             // --- Determine which clock to check ---
-            // If the ticket has never been responded to, check the response clock.
-            // Otherwise check the resolution clock (adjusted for OnHold time).
-            DateTime dueAt;
+            // Not yet responded to: check against the response target.
+            // Already responded to: check against the resolution target.
             bool checkingResponseClock = ticket.FirstRespondedAt == null;
 
-            if (checkingResponseClock)
-            {
-                dueAt = ticket.FirstResponseDueAt;
-            }
-            else
-            {
-                // Adjust resolution due date forward by any OnHold time accumulated
-                var holdOffset = TimeSpan.FromMinutes(ticket.TotalOnHoldMinutes);
+            var targetMinutes = checkingResponseClock
+                ? (ticket.FirstResponseDueAt - ticket.CreatedAt).TotalMinutes
+                : (ticket.ResolutionDueAt - ticket.CreatedAt).TotalMinutes;
 
-                // If currently on hold, add the time it has been on hold so far too
-                if (ticket.OnHoldSince != null)
-                {
-                    holdOffset += now - ticket.OnHoldSince.Value;
-                }
+            if (targetMinutes <= 0) return;
 
-                dueAt = ticket.ResolutionDueAt + holdOffset;
-            }
-
-            var totalMinutes = (dueAt - ticket.CreatedAt).TotalMinutes;
-            var elapsedMinutes = (now - ticket.CreatedAt).TotalMinutes;
-
-            if (totalMinutes <= 0) return;
-
-            var percentElapsed = elapsedMinutes / totalMinutes;
+            var percentElapsed = effectiveElapsedMinutes / targetMinutes;
 
             // --- AtRisk: 80% of time elapsed, not yet breached ---
             if (percentElapsed >= 0.8 && ticket.SlaBreachStatus == SlaBreachStatus.OnTrack)
@@ -92,14 +93,13 @@ namespace HelpDeskHQ.API.Jobs
                     "Ticket {TicketNumber} is AtRisk ({Percent:P0} elapsed)",
                     ticket.TicketNumber, percentElapsed);
 
-                // Create an in-app notification for the assigned agent (if any)
                 if (ticket.AssignedAgentId != null)
                 {
                     _context.Notifications.Add(new Notification
                     {
                         UserId = ticket.AssignedAgentId.Value,
                         TicketId = ticket.Id,
-                        Message = $"⚠️ Ticket {ticket.TicketNumber} is at risk of breaching its SLA.",
+                        Message = $"Ticket {ticket.TicketNumber} is at risk of breaching its SLA.",
                         CreatedAt = now
                     });
                 }
@@ -108,7 +108,6 @@ namespace HelpDeskHQ.API.Jobs
             // --- Breached: 100% elapsed, not yet marked Breached ---
             if (percentElapsed >= 1.0 && ticket.SlaBreachStatus != SlaBreachStatus.Breached)
             {
-                // Capture the status BEFORE mutating it, so the audit trail is accurate
                 var oldStatus = ticket.Status;
 
                 ticket.SlaBreachStatus = SlaBreachStatus.Breached;
@@ -119,9 +118,7 @@ namespace HelpDeskHQ.API.Jobs
                     "Ticket {TicketNumber} has BREACHED SLA (escalation level {Level})",
                     ticket.TicketNumber, ticket.EscalationLevel);
 
-                // Find the Team Lead for this ticket's team
-                var teamLead = ticket.Team.Members
-                    .FirstOrDefault(m => m.IsTeamLead);
+                var teamLead = ticket.Team.Members.FirstOrDefault(m => m.IsTeamLead);
 
                 if (teamLead != null)
                 {
@@ -131,12 +128,11 @@ namespace HelpDeskHQ.API.Jobs
                     {
                         UserId = teamLead.UserId,
                         TicketId = ticket.Id,
-                        Message = $"🚨 Ticket {ticket.TicketNumber} has breached its SLA and been escalated to you.",
+                        Message = $"Ticket {ticket.TicketNumber} has breached its SLA and been escalated to you.",
                         CreatedAt = now
                     });
                 }
 
-                // Write an escalation audit record
                 _context.TicketEscalations.Add(new TicketEscalation
                 {
                     TicketId = ticket.Id,
@@ -146,7 +142,6 @@ namespace HelpDeskHQ.API.Jobs
                     Reason = "SLA breach detected by automated escalation job"
                 });
 
-                // Write a status history entry
                 _context.TicketStatusHistories.Add(new TicketStatusHistory
                 {
                     TicketId = ticket.Id,

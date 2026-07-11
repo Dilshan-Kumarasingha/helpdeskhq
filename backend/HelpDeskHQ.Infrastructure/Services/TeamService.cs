@@ -1,6 +1,8 @@
-﻿using HelpDeskHQ.Core.DTOs.Admin;
+﻿using HelpDeskHQ.Core.Common.Exceptions;
+using HelpDeskHQ.Core.DTOs.Admin;
 using HelpDeskHQ.Core.Entities;
 using HelpDeskHQ.Core.Interfaces;
+using HelpDeskHQ.Infrastructure.Common;
 using HelpDeskHQ.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -22,72 +24,62 @@ namespace HelpDeskHQ.Infrastructure.Services
                 .Include(t => t.Categories)
                 .ToListAsync();
 
-            return teams.Select(t => new TeamResponseDto
-            {
-                Id = t.Id,
-                Name = t.Name,
-                MemberCount = t.Members.Count,
-                CategoryCount = t.Categories.Count
-            }).ToList();
+            return teams.Select(MapToDto).ToList();
         }
 
         public async Task<TeamResponseDto> CreateAsync(CreateTeamDto request)
         {
-            var nameExists = await _context.Teams.AnyAsync(t => t.Name == request.Name);
-            if (nameExists)
-            {
-                throw new InvalidOperationException("A team with this name already exists.");
-            }
+            await EntityValidationHelper.ThrowIfExistsAsync(
+                _context.Teams,
+                t => t.Name == request.Name,
+                "A team with this name already exists.");
 
             var team = new Team { Name = request.Name };
             _context.Teams.Add(team);
             await _context.SaveChangesAsync();
 
-            return new TeamResponseDto
-            {
-                Id = team.Id,
-                Name = team.Name,
-                MemberCount = 0,
-                CategoryCount = 0
-            };
+            return MapToDto(team);
         }
 
         public async Task<TeamResponseDto> UpdateAsync(int teamId, CreateTeamDto request)
         {
-            var team = await _context.Teams.FirstOrDefaultAsync(t => t.Id == teamId);
-            if (team == null)
-            {
-                throw new InvalidOperationException("Team not found.");
-            }
+            var team = await EntityValidationHelper.GetOrThrowAsync(
+                _context.Teams,
+                t => t.Id == teamId,
+                "Team not found.");
 
             team.Name = request.Name;
             await _context.SaveChangesAsync();
 
-            return new TeamResponseDto
-            {
-                Id = team.Id,
-                Name = team.Name,
-                MemberCount = 0,
-                CategoryCount = 0
-            };
+            return MapToDto(team);
         }
 
         public async Task DeleteAsync(int teamId)
         {
-            var team = await _context.Teams.FirstOrDefaultAsync(t => t.Id == teamId);
-            if (team == null)
-            {
-                throw new InvalidOperationException("Team not found.");
-            }
+            var team = await EntityValidationHelper.GetOrThrowAsync(
+                _context.Teams,
+                t => t.Id == teamId,
+                "Team not found.");
 
             var hasTickets = await _context.Tickets.AnyAsync(t => t.TeamId == teamId);
             if (hasTickets)
             {
-                throw new InvalidOperationException("Cannot delete a team that has tickets assigned to it.");
+                throw new ValidationException("Cannot delete a team that has tickets assigned to it.");
             }
 
             _context.Teams.Remove(team);
             await _context.SaveChangesAsync();
+        }
+
+        private static TeamResponseDto MapToDto(Team team)
+        {
+            return new TeamResponseDto
+            {
+                Id = team.Id,
+                Name = team.Name,
+                MemberCount = team.Members?.Count ?? 0,
+                CategoryCount = team.Categories?.Count ?? 0
+            };
         }
     }
 }

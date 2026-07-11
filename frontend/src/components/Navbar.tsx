@@ -1,12 +1,16 @@
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-
 import NotificationBell from './NotificationBell';
 
 export default function Navbar() {
   const { user, logout } = useAuth();
 
   if (!user) return null;
+
+  const isEmployee = user.role === 'Employee';
+  const isAgent = user.role === 'SupportAgent';
+  const isLead = user.role === 'TeamLead';
+  const isAdmin = user.role === 'Admin';
 
   return (
     <nav className="bg-white shadow px-6 py-3 flex justify-between items-center">
@@ -17,11 +21,34 @@ export default function Navbar() {
         <Link to="/dashboard" className="text-gray-600 hover:text-blue-600">
           Dashboard
         </Link>
+
+        {/* Everyone can see tickets, but what they see inside differs */}
         <Link to="/tickets" className="text-gray-600 hover:text-blue-600">
-          Tickets
+          {isEmployee ? 'My Tickets' : 'Tickets'}
         </Link>
 
-        {user.role === 'Admin' && (
+        {/* Only Employees raise new tickets */}
+        {isEmployee && (
+          <Link to="/tickets/new" className="text-gray-600 hover:text-blue-600">
+            New Ticket
+          </Link>
+        )}
+
+        {/* Agents and Leads get a queue view */}
+        {(isAgent || isLead) && (
+          <Link to="/queue" className="text-gray-600 hover:text-blue-600">
+            My Queue
+          </Link>
+        )}
+
+        {/* Leads get a team performance view */}
+        {isLead && (
+          <Link to="/team" className="text-gray-600 hover:text-blue-600">
+            Team Overview
+          </Link>
+        )}
+
+        {isAdmin && (
           <Link to="/admin" className="text-gray-600 hover:text-blue-600">
             Admin
           </Link>

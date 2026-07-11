@@ -1,8 +1,15 @@
 ﻿using System.Net;
 using System.Text.Json;
+using HelpDeskHQ.Core.Common.Exceptions;
 
 namespace HelpDeskHQ.API.Middleware
 {
+    /// <summary>
+    /// Central place that turns exceptions thrown anywhere in the request
+    /// pipeline into consistent JSON error responses with the correct
+    /// HTTP status code. Controllers should NOT catch these exceptions
+    /// themselves — they just let them bubble up here.
+    /// </summary>
     public class ExceptionHandlingMiddleware
     {
         private readonly RequestDelegate _next;
@@ -20,14 +27,24 @@ namespace HelpDeskHQ.API.Middleware
             {
                 await _next(context);
             }
-            catch (InvalidOperationException ex)
+            catch (NotFoundException ex)
             {
-                _logger.LogWarning(ex, "Handled InvalidOperationException");
+                _logger.LogWarning(ex, "Not found");
+                await WriteErrorResponse(context, HttpStatusCode.NotFound, ex.Message);
+            }
+            catch (ConflictException ex)
+            {
+                _logger.LogWarning(ex, "Conflict");
+                await WriteErrorResponse(context, HttpStatusCode.Conflict, ex.Message);
+            }
+            catch (ValidationException ex)
+            {
+                _logger.LogWarning(ex, "Validation failed");
                 await WriteErrorResponse(context, HttpStatusCode.BadRequest, ex.Message);
             }
             catch (UnauthorizedAccessException ex)
             {
-                _logger.LogWarning(ex, "Handled UnauthorizedAccessException");
+                _logger.LogWarning(ex, "Unauthorized");
                 await WriteErrorResponse(context, HttpStatusCode.Unauthorized, ex.Message);
             }
             catch (Exception ex)
